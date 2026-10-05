@@ -70,12 +70,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await address.fill("socks5://127.0.0.1:1080");
       await user.fill("a@b:/% 用户");
       await user.press("Tab");
+      assert.equal(posts.length, 0, "tabbing from username to password must not save half a login");
       await pass.fill("p@ss:/% #密码");
-      await pass.press("Tab");
       assert.equal(await pass.getAttribute("type"), "password");
-      assert.equal(posts.length, 0, "tabbing between address, username and password must not save half a login");
       const encoded = "socks5://a%40b%3A%2F%25%20%E7%94%A8%E6%88%B7:p%40ss%3A%2F%25%20%23%E5%AF%86%E7%A0%81@127.0.0.1:1080";
-      await saved(() => page.locator("#proxySub").click(), encoded);
+      await saved(async () => {
+        // WebKit may skip Save when tabbing, leaving the editor and saving
+        // now. If Tab stays inside, clicking outside saves the same login.
+        await pass.press("Tab");
+        await page.locator("#proxySub").click();
+      }, encoded);
       await page.reload();
       assert.equal(await address.inputValue(), "socks5://127.0.0.1:1080");
       assert.equal(await user.inputValue(), "a@b:/% 用户");
