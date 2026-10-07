@@ -339,9 +339,14 @@ func callHead(st *callFile, b []byte) bool {
 }
 
 // sessionOfPath is the session a Claude Code file belongs to by its name:
-// <id>.jsonl, or <id>/subagents/<agent>.jsonl.
+// <id>.jsonl, <id>/subagents/<agent>.jsonl, or a workflow's
+// <id>/subagents/workflows/<run>/<agent>.jsonl.
 func sessionOfPath(p string) string {
-	if d := filepath.Dir(p); filepath.Base(d) == "subagents" {
+	d := filepath.Dir(p)
+	if w := filepath.Dir(d); filepath.Base(w) == "workflows" && filepath.Base(filepath.Dir(w)) == "subagents" {
+		return filepath.Base(filepath.Dir(filepath.Dir(w)))
+	}
+	if filepath.Base(d) == "subagents" {
 		return filepath.Base(filepath.Dir(d))
 	}
 	return strings.TrimSuffix(filepath.Base(p), ".jsonl")
@@ -392,10 +397,11 @@ type ccCall struct {
 		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage *struct {
-			Input      int `json:"input_tokens"`
-			Output     int `json:"output_tokens"`
-			CacheRead  int `json:"cache_read_input_tokens"`
-			CacheWrite int `json:"cache_creation_input_tokens"`
+			Input      int              `json:"input_tokens"`
+			Output     int              `json:"output_tokens"`
+			CacheRead  int              `json:"cache_read_input_tokens"`
+			CacheWrite int              `json:"cache_creation_input_tokens"`
+			Creation   *ccCacheCreation `json:"cache_creation"`
 		} `json:"usage"`
 	} `json:"message"`
 }
@@ -516,7 +522,7 @@ func claudeCallLine(st *callFile, b []byte) {
 			return
 		}
 		c.Model = st.str(model)
-		c.Tokens = Tokens{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite}
+		c.Tokens = ccTokens(u.Input, u.Output, u.CacheRead, u.CacheWrite, u.Creation)
 		if c.Tokens.zero() && m.Usage == nil {
 			return
 		}

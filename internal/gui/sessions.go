@@ -41,6 +41,16 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 	warmSessions()
 	mux.HandleFunc("GET /api/sessions", func(rw http.ResponseWriter, r *http.Request) {
 		n, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		// The page draws a session count taken from every session
+		// (statsFor's Overview) beside this list, so the list is read as
+		// long as the count: at sessions.Limit the page said "238 sessions"
+		// over a list that stopped at 200, and the agents whose sessions
+		// were oldest fell off it whole — Codex had 121 and the list showed
+		// 7. Only a caller that asks for a number of its own gets one. The
+		// page draws this many rows in pages of its own (renderSessions).
+		if n <= 0 {
+			n = sessions.All
+		}
 		agents := map[string]*agent.Agent{}
 		for _, a := range agent.Clients() {
 			agents[a.ID] = a
@@ -175,7 +185,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, errors.New("no such session"))
 			return
 		}
-		if err := openTerminal(run,settings.Load().SessionTerminal); err != nil {
+		if err := openTerminal(run, settings.Load().SessionTerminal); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -238,7 +248,9 @@ func statsFor(days int) sessions.Stats {
 }
 
 // warmSessions reads every session file once magpie is up, so the Sessions
-// page opens on the kept index and not on a first read of them all.
+// page opens on the kept index and not on a first read of them all. Usage ›
+// Requests' whole history is read after it, not beside it on the disk: a
+// first All parsing 12k sessions kept that page a skeleton for 40 s.
 func warmSessions() {
 	if testing.Testing() {
 		return
@@ -247,6 +259,7 @@ func warmSessions() {
 		time.Sleep(3 * time.Second)
 		statsFor(0)
 		statsFor(30)
+		usage.QueryPage(usage.All, usage.Filter{}, 0, 50)
 	}()
 }
 

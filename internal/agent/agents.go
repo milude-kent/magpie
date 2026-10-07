@@ -33,6 +33,7 @@ func init() {
 	}
 	// the Sessions page reads the sessions of the agents in WSL distros
 	sessions.WSLHomes = wslHomes
+	sessions.WSLRunning = WSLRunning
 }
 
 // others are clients that reach the gateway without being agents magpie
@@ -80,10 +81,13 @@ func All() []*Agent {
 		cursorLocal(),
 		zed(home, cfg),
 		vscode(home, cfg),
+		vscodeInsidersAgent(home, cfg),
+		vscodium(home, cfg),
 		air(home, cfg),
 		copilot(home),
 		crush(home, cfg),
 		dsh(home),
+		reasonix(home),
 		commandCode(home),
 		fx(home),
 		omp(home),
@@ -101,6 +105,7 @@ func All() []*Agent {
 		grok(home),
 		zcode(home),
 		workbuddy(home),
+		codebuddy(home),
 		pencil(home),
 		t3code(home),
 		hanako(home),
@@ -337,7 +342,7 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 			ms[m.ID] = e
 		}
 		return map[string]any{"npm": "@ai-sdk/openai-compatible", "name": "magpie",
-			"options": map[string]any{"baseURL": gw + "/v1", "apiKey": gateway.Token}, "models": ms}
+			"options": map[string]any{"baseURL": gw + "/v1", "apiKey": keyAt(gw)}, "models": ms}
 	case "crush":
 		var ms []map[string]any
 		for _, m := range models {
@@ -359,7 +364,7 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 		if ms == nil {
 			ms = []map[string]any{}
 		}
-		return map[string]any{"type": "openai", "name": "magpie", "base_url": gw + "/v1", "api_key": gateway.Token, "models": ms}
+		return map[string]any{"type": "openai", "name": "magpie", "base_url": gw + "/v1", "api_key": keyAt(gw), "models": ms}
 	case "pi":
 		var ms []map[string]any
 		for _, m := range models {
@@ -368,7 +373,7 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 		if ms == nil {
 			ms = []map[string]any{}
 		}
-		return map[string]any{"name": "magpie", "baseUrl": gw + "/v1", "api": "openai-completions", "apiKey": gateway.Token, "models": ms}
+		return map[string]any{"name": "magpie", "baseUrl": gw + "/v1", "api": "openai-completions", "apiKey": keyAt(gw), "models": ms}
 	}
 	return nil
 }
@@ -613,7 +618,7 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 				return ""
 			}
 			return wiringOff(name, path, func(k string) (string, bool) { return edit.GetJSON(path, "provider."+magpieID+".options."+k) },
-				"baseURL", at.v1(), "apiKey", gateway.Token)
+				"baseURL", at.v1(), "apiKey", at.gwKey())
 		},
 		Sync: func() error {
 			// a model of magpie's chosen, but its provider gone from the
@@ -802,7 +807,7 @@ func piLike(at place, id, name, dir string) *Agent {
 				return ""
 			}
 			return wiringOff(name, modelsPath, func(k string) (string, bool) { return edit.GetJSON(modelsPath, "providers."+magpieID+"."+k) },
-				"baseUrl", at.v1(), "apiKey", gateway.Token)
+				"baseUrl", at.v1(), "apiKey", at.gwKey())
 		},
 		Sync: func() error {
 			return syncJSON(modelsPath, "providers."+magpieID, func() any { return magpieProviderJSONAt("pi", id, at.gw()) })
@@ -879,9 +884,15 @@ func piLike(at place, id, name, dir string) *Agent {
 	}
 }
 
-func goose(home, cfg string) *Agent {
+func goose(home, cfg string) *Agent { return gooseIn(here(home), cfg) }
+
+// gooseIn is Goose at a place whose config folder is cfg: this machine's,
+// or a WSL distro's ~/.config (see wsl.go), where Goose keeps Linux's
+// layout and its custom provider names the gateway as the distro reaches
+// it, with the key it takes from there.
+func gooseIn(at place, cfg string) *Agent {
 	path := filepath.Join(cfg, "goose", "config.yaml")
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" && at.spell == nil {
 		if app := appdir.Getenv("APPDATA"); app != "" {
 			path = filepath.Join(app, "Block", "goose", "config", "config.yaml")
 		}
@@ -889,20 +900,26 @@ func goose(home, cfg string) *Agent {
 	get := func(k string) (string, bool) { return edit.GetYAMLTop(path, k) }
 	set := func(kvs ...edit.KV) error { return edit.SetYAMLTop(path, kvs...) }
 	provider := gooseProviderPath(path)
+	// the provider keys goose takes from its environment: this machine's
+	// for this machine's goose, none of a distro's
+	keyEnv := os.Getenv
+	if at.spell != nil {
+		keyEnv = func(string) string { return "" }
+	}
 	return &Agent{
 		ID: "goose", Name: "Goose", Icon: "goose", Bin: "goose", Dir: filepath.Dir(path), Path: path, Spelled: prefixed,
 		UA: []string{"goose"},
 		Check: func() string {
-			if p, _ := get("GOOSE_PROVIDER"); p != gooseProviderID {
+			if p, _ := gooseActive(path); p != gooseProviderID {
 				return ""
 			}
 			return wiringOff("Goose", provider, func(k string) (string, bool) { return edit.GetJSON(provider, k) },
-				"base_url", gatewayV1(), "headers.Authorization", "Bearer "+gateway.Token)
+				"base_url", at.v1(), "headers.Authorization", "Bearer "+at.gwKey())
 		},
-		Sync: func() error { return syncGooseProvider(provider) },
+		Sync: func() error { return syncGooseProvider(provider, at) },
 		// goose loads custom_providers when it starts
 		Notice: func() string {
-			if p, _ := get("GOOSE_PROVIDER"); p == gooseProviderID && Running(`Goose\.app/`, `(^|/)goose( |$)`) {
+			if p, _ := gooseActive(path); p == gooseProviderID && Running(`Goose\.app/`, `(^|/)goose( |$)`) {
 				return "Goose loads its providers at start-up — quit and reopen Goose (and open goose sessions) to use magpie's models."
 			}
 			return ""
@@ -918,10 +935,11 @@ func goose(home, cfg string) *Agent {
 		},
 		Fields: []Field{{
 			Key: "model", Label: "model",
-			Get: pairGet(get, "GOOSE_PROVIDER", "GOOSE_MODEL"),
+			// the layout goose keeps it in, old or new (see goose.go)
+			Get: func() string { return gooseModel(path) },
 			Set: func(v string) error {
 				if v == "" {
-					if err := edit.DelYAMLTop(path, "GOOSE_PROVIDER", "GOOSE_MODEL"); err != nil {
+					if err := clearGooseModel(path); err != nil {
 						return err
 					}
 					return removeGooseProvider(provider)
@@ -930,14 +948,17 @@ func goose(home, cfg string) *Agent {
 				// Goose's, each model with its window and whether Goose
 				// can send it a thinking level (see goose.go)
 				if ref, ok := strings.CutPrefix(v, gooseProviderID+"/"); ok && isMagpie(ref) {
-					if err := writeGooseProvider(provider); err != nil {
+					if err := writeGooseProvider(provider, at); err != nil {
 						return err
 					}
 				}
-				return pairSet(set, "GOOSE_PROVIDER", "GOOSE_MODEL")(v)
+				return setGooseModel(path, v)
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(ownOptions("", cur["model"], "anthropic", "openai", "google", "openrouter"), viaMagpie("goose", gooseProviderID+"/")...)
+				// only the native providers this goose is set up with (#987:
+				// every one of four was listed, OpenRouter's hundreds of
+				// models on a goose that had only magpie)
+				return append(ownOptions("", cur["model"], gooseConfigured(path, keyEnv)...), viaMagpie("goose", gooseProviderID+"/")...)
 			},
 		}, {
 			// GOOSE_THINKING_EFFORT, the effort goose asks of a model that
@@ -1158,7 +1179,7 @@ func crushAt(at place, path, data string) *Agent {
 				return ""
 			}
 			return wiringOff("Crush", path, func(k string) (string, bool) { return get("providers." + magpieID + "." + k) },
-				"base_url", at.v1(), "api_key", gateway.Token)
+				"base_url", at.v1(), "api_key", at.gwKey())
 		},
 		Sync: func() error {
 			return syncJSON(path, "providers."+magpieID, provider)
